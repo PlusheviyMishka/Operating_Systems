@@ -5,13 +5,48 @@
 #include <sys/wait.h>
 
 #define BUFFER_SIZE 1024
+#define INITIAL_BUFFER_SIZE 256
+
+// Функция для динамического чтения строки
+char* read_dynamic_string(FILE* stream) {
+    size_t capacity = INITIAL_BUFFER_SIZE;
+    char* buffer = malloc(capacity);
+    if (!buffer) return NULL;
+    
+    size_t pos = 0;
+    int c;
+    
+    while ((c = fgetc(stream)) != EOF && c != '\n') {
+        // Увеличиваем буфер если нужно
+        if (pos >= capacity - 1) {
+            capacity *= 2;
+            char* new_buffer = realloc(buffer, capacity);
+            if (!new_buffer) {
+                free(buffer);
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
+        
+        buffer[pos++] = (char)c;
+    }
+    
+    // Обработка EOF без данных
+    if (c == EOF && pos == 0) {
+        free(buffer);
+        return NULL;
+    }
+    
+    buffer[pos] = '\0';
+    return buffer;
+}
 
 int main() {
     int pipe1[2]; // Родитель -> Дочерний
     int pipe2[2]; // Дочерний -> Родитель
     pid_t pid;
     char filename[100];
-    char buffer[BUFFER_SIZE];
+    char* dynamic_buffer = NULL;
     int status;
 
     if (pipe(pipe1) == -1 || pipe(pipe2) == -1) {
@@ -54,15 +89,25 @@ int main() {
         
         while (1) {
             printf("> ");
-            if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
+            fflush(stdout);
+            
+            // Используем динамическое чтение вместо fgets
+            dynamic_buffer = read_dynamic_string(stdin);
+            if (dynamic_buffer == NULL) {
                 break;
             }
             
-            if (strlen(buffer) <= 1) {
+            if (strlen(dynamic_buffer) <= 0) {
+                free(dynamic_buffer);
                 continue;
             }
             
-            write(pipe1[1], buffer, strlen(buffer));
+            // Добавляем символ новой строки для дочернего процесса
+            write(pipe1[1], dynamic_buffer, strlen(dynamic_buffer));
+            write(pipe1[1], "\n", 1);
+            
+            free(dynamic_buffer);
+            dynamic_buffer = NULL;
             
             if (waitpid(pid, &status, WNOHANG) == pid) {
                 printf("Дочерний процесс завершился\n");
@@ -79,18 +124,24 @@ int main() {
             
             if (select(pipe2[0] + 1, &readfds, NULL, NULL, &timeout) > 0) {
                 if (FD_ISSET(pipe2[0], &readfds)) {
-                    ssize_t bytes_read = read(pipe2[0], buffer, sizeof(buffer) - 1);
+                    char temp_buffer[BUFFER_SIZE];
+                    ssize_t bytes_read = read(pipe2[0], temp_buffer, sizeof(temp_buffer) - 1);
                     if (bytes_read > 0) {
-                        buffer[bytes_read] = '\0';
-                        printf("Дочерний процесс: %s", buffer);
+                        temp_buffer[bytes_read] = '\0';
+                        printf("Дочерний процесс: %s", temp_buffer);
                         
-                        if (strstr(buffer, "ERROR: Division by zero") != NULL) {
+                        if (strstr(temp_buffer, "ERROR: Division by zero") != NULL) {
                             printf("Завершение работы из-за деления на ноль\n");
                             break;
                         }
                     }
                 }
             }
+        }
+        
+        // Освобождаем память, если она еще не освобождена
+        if (dynamic_buffer != NULL) {
+            free(dynamic_buffer);
         }
         
         close(pipe1[1]);
