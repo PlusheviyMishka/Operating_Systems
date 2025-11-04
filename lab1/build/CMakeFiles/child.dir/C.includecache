@@ -1,0 +1,20 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/workspaces/Operating_Systems/lab1/src/child.c
+stdio.h
+-
+stdlib.h
+-
+unistd.h
+-
+string.h
+-
+ctype.h
+-
+

@@ -1,0 +1,14 @@
+[
+{
+  "directory": "D:/Operating_Systems/build",
+  "command": "D:\\programms\\MSYS2\\mingw64\\bin\\gcc.exe   -g -std=gnu99 -o CMakeFiles\\parent.dir\\src\\parent.c.obj -c D:\\Operating_Systems\\src\\parent.c",
+  "file": "D:/Operating_Systems/src/parent.c",
+  "output": "CMakeFiles/parent.dir/src/parent.c.obj"
+},
+{
+  "directory": "D:/Operating_Systems/build",
+  "command": "D:\\programms\\MSYS2\\mingw64\\bin\\gcc.exe   -g -std=gnu99 -o CMakeFiles\\child.dir\\src\\child.c.obj -c D:\\Operating_Systems\\src\\child.c",
+  "file": "D:/Operating_Systems/src/child.c",
+  "output": "CMakeFiles/child.dir/src/child.c.obj"
+}
+]

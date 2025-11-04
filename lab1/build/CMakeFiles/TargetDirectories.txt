@@ -1,0 +1,4 @@
+/workspaces/Operating_Systems/lab1/build/CMakeFiles/rebuild_cache.dir
+/workspaces/Operating_Systems/lab1/build/CMakeFiles/edit_cache.dir
+/workspaces/Operating_Systems/lab1/build/CMakeFiles/child.dir
+/workspaces/Operating_Systems/lab1/build/CMakeFiles/parent.dir
