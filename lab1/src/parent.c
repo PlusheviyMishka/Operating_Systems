@@ -44,6 +44,7 @@ int main() {
     pid_t pid;
     char filename[100];
     char* dynamic_buffer = NULL;
+    char response_buffer[BUFFER_SIZE];
     int status;
 
     if (pipe(pipe1) == -1 || pipe(pipe2) == -1) {
@@ -93,44 +94,31 @@ int main() {
                 break;
             }
             
-            if (strlen(dynamic_buffer) <= 0) {
+            if (strlen(dynamic_buffer) == 0) {
                 free(dynamic_buffer);
                 continue;
             }
             
             write(pipe1[1], dynamic_buffer, strlen(dynamic_buffer));
-            write(pipe1[1], "\n", 1);
+            write(pipe1[1], "\n", 1);  
             
             free(dynamic_buffer);
             dynamic_buffer = NULL;
             
+            ssize_t bytes_read = read(pipe2[0], response_buffer, sizeof(response_buffer) - 1);
+            if (bytes_read > 0) {
+                response_buffer[bytes_read] = '\0';
+                printf("Дочерний процесс: %s", response_buffer);
+                
+                if (strstr(response_buffer, "ERROR: Division by zero") != NULL) {
+                    printf("Завершение работы из-за деления на ноль\n");
+                    break;
+                }
+            }
+            
             if (waitpid(pid, &status, WNOHANG) == pid) {
                 printf("Дочерний процесс завершился\n");
                 break;
-            }
-            
-            fd_set readfds;
-            struct timeval timeout;
-            
-            FD_ZERO(&readfds);
-            FD_SET(pipe2[0], &readfds);
-            timeout.tv_sec = 0;
-            timeout.tv_usec = 100000; // 100ms
-            
-            if (select(pipe2[0] + 1, &readfds, NULL, NULL, &timeout) > 0) {
-                if (FD_ISSET(pipe2[0], &readfds)) {
-                    char temp_buffer[BUFFER_SIZE];
-                    ssize_t bytes_read = read(pipe2[0], temp_buffer, sizeof(temp_buffer) - 1);
-                    if (bytes_read > 0) {
-                        temp_buffer[bytes_read] = '\0';
-                        printf("Дочерний процесс: %s", temp_buffer);
-                        
-                        if (strstr(temp_buffer, "ERROR: Division by zero") != NULL) {
-                            printf("Завершение работы из-за деления на ноль\n");
-                            break;
-                        }
-                    }
-                }
             }
         }
         
