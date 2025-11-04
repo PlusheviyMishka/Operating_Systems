@@ -7,7 +7,6 @@
 #define BUFFER_SIZE 1024
 #define INITIAL_BUFFER_SIZE 256
 
-// Функция для динамического чтения строки
 char* read_dynamic_string(FILE* stream) {
     size_t capacity = INITIAL_BUFFER_SIZE;
     char* buffer = malloc(capacity);
@@ -17,7 +16,6 @@ char* read_dynamic_string(FILE* stream) {
     int c;
     
     while ((c = fgetc(stream)) != EOF && c != '\n') {
-        // Увеличиваем буфер если нужно
         if (pos >= capacity - 1) {
             capacity *= 2;
             char* new_buffer = realloc(buffer, capacity);
@@ -31,7 +29,6 @@ char* read_dynamic_string(FILE* stream) {
         buffer[pos++] = (char)c;
     }
     
-    // Обработка EOF без данных
     if (c == EOF && pos == 0) {
         free(buffer);
         return NULL;
@@ -42,8 +39,8 @@ char* read_dynamic_string(FILE* stream) {
 }
 
 int main() {
-    int pipe1[2]; // Родитель -> Дочерний
-    int pipe2[2]; // Дочерний -> Родитель
+    int pipe1[2]; // родитель -> дочерний
+    int pipe2[2]; // дочерний -> родитель
     pid_t pid;
     char filename[100];
     char* dynamic_buffer = NULL;
@@ -91,7 +88,6 @@ int main() {
             printf("> ");
             fflush(stdout);
             
-            // Используем динамическое чтение вместо fgets
             dynamic_buffer = read_dynamic_string(stdin);
             if (dynamic_buffer == NULL) {
                 break;
@@ -102,7 +98,6 @@ int main() {
                 continue;
             }
             
-            // Добавляем символ новой строки для дочернего процесса
             write(pipe1[1], dynamic_buffer, strlen(dynamic_buffer));
             write(pipe1[1], "\n", 1);
             
@@ -139,7 +134,6 @@ int main() {
             }
         }
         
-        // Освобождаем память, если она еще не освобождена
         if (dynamic_buffer != NULL) {
             free(dynamic_buffer);
         }

@@ -5,12 +5,13 @@
 #include <ctype.h>
 
 #define BUFFER_SIZE 1024
-#define MAX_NUMBERS 100
+#define INITIAL_NUMBERS_CAPACITY 10
 
 int main(int argc, char *argv[]) {
     char buffer[BUFFER_SIZE];
-    int numbers[MAX_NUMBERS];
-    int count;
+    int *numbers = NULL;
+    int count = 0;
+    int capacity = 0;
     FILE *output_file;
     
     if (argc != 2) {
@@ -36,10 +37,18 @@ int main(int argc, char *argv[]) {
         }
         
         count = 0;
+        if (numbers == NULL) {
+            capacity = INITIAL_NUMBERS_CAPACITY;
+            numbers = malloc(capacity * sizeof(int));
+            if (numbers == NULL) {
+                perror("malloc");
+                exit(EXIT_FAILURE);
+            }
+        }
+        
         char *token = strtok(buffer, " \t\n");
         
-        while (token != NULL && count < MAX_NUMBERS) {
-            // Проверяем, что токен состоит только из цифр и знака
+        while (token != NULL) {
             int valid = 1;
             for (int i = 0; token[i] != '\0'; i++) {
                 if (!isdigit(token[i]) && !(i == 0 && (token[i] == '+' || token[i] == '-'))) {
@@ -49,6 +58,16 @@ int main(int argc, char *argv[]) {
             }
             
             if (valid) {
+                if (count >= capacity) {
+                    capacity *= 2;
+                    int *new_numbers = realloc(numbers, capacity * sizeof(int));
+                    if (new_numbers == NULL) {
+                        perror("realloc");
+                        free(numbers);
+                        exit(EXIT_FAILURE);
+                    }
+                    numbers = new_numbers;
+                }
                 numbers[count++] = atoi(token);
             }
             token = strtok(NULL, " \t\n");
@@ -59,6 +78,9 @@ int main(int argc, char *argv[]) {
             printf("ERROR: Need at least 2 numbers\n");
             fflush(output_file);
             fflush(stdout);
+            
+            free(numbers);
+            numbers = NULL;
             continue;
         }
         
@@ -90,12 +112,19 @@ int main(int argc, char *argv[]) {
         fprintf(output_file, "---\n");
         fflush(output_file);
         
+        free(numbers);
+        numbers = NULL;
+        
         if (error) {
             break;
         }
         
         printf("OK: Command processed successfully\n");
         fflush(stdout);
+    }
+    
+    if (numbers != NULL) {
+        free(numbers);
     }
     
     fprintf(output_file, "=== Дочерний процесс завершен ===\n");
