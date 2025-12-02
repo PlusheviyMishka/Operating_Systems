@@ -1,0 +1,3 @@
+/workspaces/Operating_Systems/lab2/build/CMakeFiles/naive_search.dir
+/workspaces/Operating_Systems/lab2/build/CMakeFiles/edit_cache.dir
+/workspaces/Operating_Systems/lab2/build/CMakeFiles/rebuild_cache.dir

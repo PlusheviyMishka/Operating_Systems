@@ -1,0 +1,8 @@
+[
+{
+  "directory": "D:/Operating_Systems/build",
+  "command": "D:\\programms\\MSYS2\\mingw64\\bin\\gcc.exe   -g -std=gnu99 -o CMakeFiles\\naive_search.dir\\src\\naive_search.c.obj -c D:\\Operating_Systems\\lab2\\src\\naive_search.c",
+  "file": "D:/Operating_Systems/lab2/src/naive_search.c",
+  "output": "CMakeFiles/naive_search.dir/src/naive_search.c.obj"
+}
+]
