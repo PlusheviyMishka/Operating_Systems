@@ -22,7 +22,7 @@ typedef struct {
     search_results_t *results; // указатель на общие результаты
 } thread_data_t;
 
-// Инициализация структуры результатов
+// Конструктор результатов
 void init_results(search_results_t *results, int initial_capacity) {
     results->positions = malloc(initial_capacity * sizeof(int));
     if (results->positions == NULL) {
@@ -34,7 +34,7 @@ void init_results(search_results_t *results, int initial_capacity) {
     pthread_mutex_init(&results->mutex, NULL);
 }
 
-// Освобождение ресурсов результатов
+// Деструктор результатов
 void free_results(search_results_t *results) {
     free(results->positions);
     pthread_mutex_destroy(&results->mutex);
@@ -148,12 +148,12 @@ void parallel_string_search(const char *text, const char *pattern, int num_threa
         }
     }
     
-    // Ожидаем завершения всех потоков
+    // Ожидание завершения всех потоков
     for (int i = 0; i < num_threads; i++) {
         pthread_join(threads[i], NULL);
     }
     
-    // Выводим результаты
+    // Вывод результатов
     printf("\nSearch completed. Found %d occurrences:\n", results.count);
     for (int i = 0; i < results.count; i++) {
         printf("Position %d\n", results.positions[i]);

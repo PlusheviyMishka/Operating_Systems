@@ -1,0 +1,25 @@
+# Скомпилированные и объектные файлы
+*.o
+*.so
+*.a
+*.dll
+*.exe
+*.lib
+
+# Файлы сборки и временные файлы
+build/
+dist/
+out/
+*.tmp
+*.log
+
+# Файлы, созданные Make/CMake/Ninja
+Makefile
+cmake-build-debug/
+CMakeCache.txt
+*~
+
+# Файлы редактора и IDE
+.vscode/
+*.swp
+.DS_Store
