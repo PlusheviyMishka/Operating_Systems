@@ -1,3 +1,0 @@
-D:/Operating_Systems/build/CMakeFiles/naive_search.dir
-D:/Operating_Systems/build/CMakeFiles/edit_cache.dir
-D:/Operating_Systems/build/CMakeFiles/rebuild_cache.dir

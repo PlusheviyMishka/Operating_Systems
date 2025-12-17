@@ -1,3 +1,0 @@
-D:\programms\Cmake\bin\cmake.exe -E rm -f CMakeFiles\naive_search.dir/objects.a
-D:\programms\MSYS2\mingw64\bin\ar.exe qc CMakeFiles\naive_search.dir/objects.a @CMakeFiles\naive_search.dir\objects1.rsp
-D:\programms\MSYS2\mingw64\bin\gcc.exe -g -Wl,--whole-archive CMakeFiles\naive_search.dir/objects.a -Wl,--no-whole-archive -o naive_search.exe -Wl,--out-implib,libnaive_search.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\naive_search.dir\linkLibs.rsp
