@@ -19,5 +19,8 @@ WORKDIR /labs
 # Копируем ВСЕ папки лабораторных из текущей директории
 COPY lab1/ ./lab1/
 COPY lab2/ ./lab2/
+COPY lab3/ ./lab3/
+COPY lab4/ ./lab4/
+COPY bulls_cows_project/ ./bulls_cows_project/
 
 CMD ["/bin/bash"]
