@@ -27,25 +27,28 @@ static pthread_t main_thread_id;
 
 static pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Synchronization to wait for CREATE/JOIN result
+// синхронизация для CREATE/JOIN result
 static pthread_mutex_t resp_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  resp_cond  = PTHREAD_COND_INITIALIZER;
 static int waiting_create = 0;
 static int waiting_join = 0;
 static int last_result = 0; // 0=unknown, 1=success, -1=failure
 
-// Prebuilt EXIT message used by SIGINT handler (async-signal-safe write()).
+//пресозд EXIT message для SIGINT handler
 static char exit_msg[128] = {0};
 static volatile sig_atomic_t exit_msg_len = 0;
 static volatile sig_atomic_t have_game = 0;
 
+//печать с использованием мьютекса для защиты
 static void safe_print(const char *msg) {
     pthread_mutex_lock(&print_mutex);
     fputs(msg, stdout);
+    //сразу скидываем 
     fflush(stdout);
     pthread_mutex_unlock(&print_mutex);
 }
 
+//очистка fifo, закрытие дескрипторов
 static void client_cleanup(void) {
     if (client_fd >= 0) {
         close(client_fd);
@@ -65,7 +68,7 @@ static void on_signal(int sig) {
     running = 0;
     list_running = 0;
 
-    // Best-effort: tell server we're leaving the current game.
+    // сообщ что выходим из игры
     if (have_game && server_fd >= 0 && exit_msg_len > 0) {
         (void)write(server_fd, exit_msg, (size_t)exit_msg_len);
     }
@@ -74,7 +77,7 @@ static void on_signal(int sig) {
     _exit(128 + sig);
 }
 
-// Used only to interrupt blocking stdin reads (fgets/scanf) from another thread.
+
 static void wake_stdin_handler(int sig) {
     (void)sig;
 }
@@ -87,7 +90,7 @@ static void install_client_handlers(void) {
     signal(SIGHUP,  on_signal);
     signal(SIGQUIT, on_signal);
 
-    // Crash signals: best-effort cleanup (can't be guaranteed for all cases)
+    // crash signals
     signal(SIGSEGV, on_signal);
     signal(SIGABRT, on_signal);
     signal(SIGFPE,  on_signal);
@@ -96,20 +99,20 @@ static void install_client_handlers(void) {
     signal(SIGBUS,  on_signal);
 #endif
 
-    // Don't die if we write to a closed FIFO.
+    
     signal(SIGPIPE, SIG_IGN);
 
-    // Used by reader thread to wake the main thread if the game ends.
+    // для потока читателя если игра закончится
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = wake_stdin_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0; // important: do NOT use SA_RESTART so fgets can be interrupted
+    sa.sa_flags = 0; 
     sigaction(SIGUSR1, &sa, NULL);
 }
 
 static void maybe_signal_waiters(const char *msg) {
-    // Called from reader thread.
+    // вызов из reader thread.
     pthread_mutex_lock(&resp_mutex);
 
     if (waiting_create) {
@@ -142,7 +145,7 @@ static void maybe_signal_waiters(const char *msg) {
 static void maybe_handle_game_over(const char *msg) {
     if (game_over) return;
 
-    // Server broadcasts these when the game finishes.
+    // Server транслирует это если игра finished.
     if (strstr(msg, "Game ended") != NULL || strstr(msg, "WINS the game") != NULL) {
         game_over = 1;
         have_game = 0;
@@ -151,7 +154,7 @@ static void maybe_handle_game_over(const char *msg) {
 
         safe_print("\n[Client] Game finished. Exiting input mode...\n");
 
-        // Wake the main thread if it's blocked on stdin.
+        // на случай блока reader thread.
         pthread_kill(main_thread_id, SIGUSR1);
     }
 }
@@ -180,6 +183,7 @@ static void *read_thread_func(void *arg) {
     return NULL;
 }
 
+//print список игр с промежутком
 static void *list_thread_func(void *arg) {
     (void)arg;
     char cmd[64];
@@ -200,10 +204,10 @@ static void *list_thread_func(void *arg) {
 }
 
 static int wait_result(int is_join) {
-    // returns 1 success, 0 failure/timeout
+    // return 1 success, 0 failure/timeout
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 5; // up to 5 seconds
+    ts.tv_sec += 5; 
 
     pthread_mutex_lock(&resp_mutex);
     last_result = 0;
@@ -217,7 +221,7 @@ static int wait_result(int is_join) {
 
     int ok = (last_result == 1);
 
-    // If timed out, stop waiting flags.
+    // если timed out, не ждет флаги.
     if (is_join) waiting_join = 0;
     else waiting_create = 0;
 
@@ -229,33 +233,35 @@ int main(void) {
     pid = getpid();
     install_client_handlers();
 
-    // Reader thread will use this to interrupt blocking stdin reads when the game ends.
     main_thread_id = pthread_self();
 
     snprintf(client_fifo_path, sizeof(client_fifo_path), "client_%d_fifo", pid);
 
-    // If previous run crashed and FIFO stayed
+    // на случай краша пред клиента закрываем открытый fifo
     unlink(client_fifo_path);
 
     if (mkfifo(client_fifo_path, 0666) < 0) {
         perror("mkfifo client");
         return 1;
     }
-
+    
+    //пишем серверу
     server_fd = open(SERVER_FIFO, O_WRONLY | O_NONBLOCK);
     if (server_fd < 0) {
         perror("open server fifo");
         client_cleanup();
         return 1;
     }
-
+    
+    //сервер отвечает нам лично
     client_fd = open(client_fifo_path, O_RDONLY | O_NONBLOCK);
     if (client_fd < 0) {
         perror("open client fifo");
         client_cleanup();
         return 1;
     }
-
+    
+    //для разделения ввода пользователя и вывода в реальном времени инфы от сервера
     pthread_t reader_thread;
     pthread_create(&reader_thread, NULL, read_thread_func, NULL);
 
@@ -271,6 +277,7 @@ int main(void) {
     pthread_t list_thread;
     int list_thread_started = 0;
 
+    // анализ ввода и создания msg
     if (choice == 1) {
         int max;
         safe_print("Game name: ");
@@ -337,14 +344,15 @@ int main(void) {
         return 1;
     }
 
-    // Clear stdin buffer after scanf
+    // clear stdin buffer
     int c; while ((c = getchar()) != '\n' && c != EOF) {}
 
+    
     char word[32];
     while (running && !game_over) {
         safe_print("> ");
         if (!fgets(word, sizeof(word), stdin)) {
-            // If we were interrupted because the game ended, just leave.
+            // если игра закончена просто выход из loop.
             if (game_over) break;
             if (errno == EINTR) continue;
             break;
@@ -353,7 +361,7 @@ int main(void) {
         word[strcspn(word, "\n")] = 0;
 
         if (game_over) break;
-
+        
         if (strcmp(word, "EXIT") == 0) {
             char msg[128];
             snprintf(msg, sizeof(msg), "EXIT %s %d\n", game, pid);

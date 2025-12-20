@@ -1,4 +1,3 @@
-
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
@@ -19,7 +18,6 @@ static void sleep_ms(long ms) {
     ts.tv_sec = ms / 1000;
     ts.tv_nsec = (ms % 1000) * 1000000L;
     while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
-        // continue sleeping for remaining time
     }
 }
 
@@ -47,15 +45,14 @@ static pthread_mutex_t games_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int server_fd = -1;
 
-// Main loop + background threads stop when this flag becomes 0.
 static volatile sig_atomic_t running = 1;
 
-// If shutdown requested by a signal, we store it here for logging in main().
 static volatile sig_atomic_t shutdown_signal = 0;
 
 static pthread_t reaper_thread;
 static int reaper_started = 0;
 
+//функция печати в лог
 static void log_event(const char *msg) {
     FILE *f = fopen("server.log", "a");
     if (!f) return;
@@ -66,13 +63,12 @@ static void log_event(const char *msg) {
 
     char dt[32];
     if (strftime(dt, sizeof(dt), "%Y-%m-%dT%H:%M:%S", &tm_local) == 0) {
-        // Fallback: should be very rare
         fprintf(f, "[%ld] %s\n", (long)now, msg);
         fclose(f);
         return;
     }
 
-    // %z produces +hhmm / -hhmm. Convert to +hh:mm for ISO-8601 readability.
+    //для вывода времени и даты
     char tz_raw[8];
     tz_raw[0] = 0;
     (void)strftime(tz_raw, sizeof(tz_raw), "%z", &tm_local);
@@ -96,8 +92,7 @@ static void log_event(const char *msg) {
 
 
 
-// Best-effort cleanup for normal exit and most crashes.
-// NOTE: cleanup cannot be guaranteed for SIGKILL (kill -9) or power loss.
+// notmal exit функция
 static void server_cleanup(void) {
     if (server_fd >= 0) {
         close(server_fd);
@@ -106,10 +101,8 @@ static void server_cleanup(void) {
     unlink(SERVER_FIFO);
 }
 
+// в случае краша для закрытия дескрипторов и завершения работы
 static void server_crash_handler(int sig) {
-    // Async-signal-safe best effort: close fd then exit immediately.
-    // We deliberately do NOT unlink the FIFO here (not async-signal-safe).
-    // The next server start unlinks SERVER_FIFO before mkfifo().
     if (server_fd >= 0) {
         close(server_fd);
         server_fd = -1;
@@ -117,28 +110,30 @@ static void server_crash_handler(int sig) {
     _exit(128 + sig);
 }
 
-
+//штатное завершение
 static void server_graceful_handler(int sig) {
     shutdown_signal = sig;
     running = 0;
 
-    // Wake select(): close is async-signal-safe.
     if (server_fd >= 0) {
         close(server_fd);
         server_fd = -1;
     }
 }
 
+//реакция сервера на разные сигналы чтобы крашился нормально
 static void install_server_handlers(void) {
+    //завершение штатно -> закрыть файлы/удалить FIFO
     atexit(server_cleanup);
 
-    // Graceful-ish exits (stop loops, then main joins threads & cleans up)
+    //“Если нажали Ctrl+C (SIGINT) или серверу сказали завершиться
+    //то не падать сразу вызвать server_graceful_handler
     signal(SIGINT,  server_graceful_handler);
     signal(SIGTERM, server_graceful_handler);
     signal(SIGHUP,  server_graceful_handler);
     signal(SIGQUIT, server_graceful_handler);
 
-    // Common crash signals (best-effort cleanup; cannot guarantee)
+    //на случай разны ошибок
     signal(SIGSEGV, server_crash_handler);
     signal(SIGABRT, server_crash_handler);
     signal(SIGFPE,  server_crash_handler);
@@ -151,6 +146,7 @@ static void install_server_handlers(void) {
     signal(SIGPIPE, SIG_IGN);
 }
 
+//убрать игру по индексу
 static void remove_game_by_index(int idx) {
     if (idx < 0 || idx >= game_count) return;
     for (int i = idx; i < game_count - 1; i++) {
@@ -159,6 +155,8 @@ static void remove_game_by_index(int idx) {
     game_count--;
 }
 
+//проходит по списку игр и удаляет те, где не осталось игроков, предварительно записав это в лог
+//испоьзование под мьютексом
 static void prune_empty_games_locked(void) {
     // Must be called with games_mutex held.
     for (int i = 0; i < game_count; ) {
@@ -173,6 +171,7 @@ static void prune_empty_games_locked(void) {
     }
 }
 
+//ищет игру по имени в массиве игр и возвращает указатель на неё, а если не нашёл — возвращает NULL.
 static Game *find_game(const char *name) {
     for (int i = 0; i < game_count; i++) {
         if (!strcmp(games[i].name, name)) return &games[i];
@@ -180,6 +179,7 @@ static Game *find_game(const char *name) {
     return NULL;
 }
 
+//связывем pid с player
 static int player_index(Game *g, pid_t pid) {
     for (int i = 0; i < g->player_count; i++) {
         if (g->players[i].pid == pid) return i;
@@ -201,7 +201,7 @@ static void remove_player(Game *g, pid_t pid) {
         return;
     }
 
-    // If the removed player was before current_turn, shift current_turn left.
+    // сдвиг хода после удаления игрока
     if (idx < g->current_turn) {
         g->current_turn--;
         if (g->current_turn < 0) g->current_turn = 0;
@@ -212,6 +212,7 @@ static void remove_player(Game *g, pid_t pid) {
     }
 }
 
+//рандом слово, шерстит words.txt, если нет слов то "apple"
 static void random_word(char *word) {
     FILE *f = fopen("words.txt", "r");
     if (!f) {
@@ -234,7 +235,9 @@ static void random_word(char *word) {
     strcpy(word, words[rand() % count]);
 }
 
-// Returns 0 on success, -1 on failure.
+//Открывает FIFO конкретного клиента client_<pid>_fifo и отправляет туда сообщение.
+//Если FIFO нет/никто не читает — пишет в лог и считает клиента “отвалившимся”.
+// возврат 0 on success, -1 on failure.
 static int send_to_client(pid_t pid, const char *msg) {
     char fifo[64];
     snprintf(fifo, sizeof(fifo), "client_%d_fifo", pid);
@@ -246,8 +249,6 @@ static int send_to_client(pid_t pid, const char *msg) {
         return 0;
     }
 
-    // If open() fails with ENOENT/ENXIO, the client FIFO is missing or has no reader
-    // (common when client crashed). Treat as dead.
     if (errno == ENOENT || errno == ENXIO) {
         (void)unlink(fifo); // best-effort cleanup of stale FIFO
     }
@@ -258,9 +259,10 @@ static int send_to_client(pid_t pid, const char *msg) {
     return -1;
 }
 
+//Рассылает сообщение всем игрокам игры через send_to_client.
+//Кого не удалось уведомить — добавляет в список “мертвых” и удаляет из игры.
+//использует send_to_client()
 static void broadcast_to_game(Game *g, const char *msg) {
-    // If a client disappeared (Ctrl+C, crash), its FIFO will be gone.
-    // We remove such players to keep game state consistent.
     pid_t dead[MAX_PLAYERS];
     int dead_count = 0;
 
@@ -275,6 +277,8 @@ static void broadcast_to_game(Game *g, const char *msg) {
     }
 }
 
+//Считает результат попытки: 
+//быки — буква на правильном месте, коровы — буква есть, но в другой позиции.
 static void bulls_cows(const char *secret, const char *guess, int *b, int *c) {
     *b = *c = 0;
     int len = (int)strlen(secret);
@@ -293,8 +297,8 @@ static void bulls_cows(const char *secret, const char *guess, int *b, int *c) {
     }
 }
 
-// Reaper: periodically removes disconnected clients and prunes empty games.
-// Runs in a separate thread and exits when `running` becomes 0.
+//Проверяет “жив ли клиент”: пытается открыть его FIFO на запись.
+//Если FIFO не существует или нет читателя (ENOENT/ENXIO) — считает клиента отключённым.
 static int client_fifo_has_reader(pid_t pid) {
     char fifo[64];
     snprintf(fifo, sizeof(fifo), "client_%d_fifo", pid);
@@ -305,23 +309,25 @@ static int client_fifo_has_reader(pid_t pid) {
         return 1;
     }
 
-    // ENOENT: fifo doesn't exist, ENXIO: exists but no reader
     if (errno == ENOENT || errno == ENXIO) return 0;
 
-    // On other errors, assume alive to avoid false kicks.
     return 1;
 }
 
+//Фоновый поток сервера: 
+//периодически проверяет игроков, удаляет отключившихся и удаляет пустые игры.
+//Работает, пока running == 1.
 static void *reaper_thread_func(void *arg) {
     (void)arg;
 
     while (running) {
-        // Sleep up to ~2 seconds, but remain responsive to shutdown.
+        // спит примерно 2 мс , проходится по игрокам
         for (int i = 0; i < 20 && running; i++) {
             sleep_ms(100);
         }
         if (!running) break;
 
+        //критическая секция -- игры
         pthread_mutex_lock(&games_mutex);
         for (int gi = 0; gi < game_count; gi++) {
             Game *g = &games[gi];
@@ -345,10 +351,11 @@ static void *reaper_thread_func(void *arg) {
 }
 
 
+//Разбирает одну команду от клиента (CREATE/JOIN/GUESS/EXIT/LIST) и изменяет состояние игр.
+//Делает все операции под games_mutex, чтобы не было гонок с reaper-потоком.
 static void handle_command(const char *cmdline) {
     if (!cmdline) return;
 
-    // Trim leading whitespace
     while (*cmdline == ' ' || *cmdline == '\t' || *cmdline == '\r') cmdline++;
     if (*cmdline == '\0') return;
 
@@ -356,7 +363,7 @@ static void handle_command(const char *cmdline) {
     strncpy(buf, cmdline, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
-    // Trim trailing CR (in case of \r\n)
+    
     size_t blen = strlen(buf);
     if (blen > 0 && buf[blen - 1] == '\r') buf[blen - 1] = '\0';
 
@@ -364,8 +371,10 @@ static void handle_command(const char *cmdline) {
     pid_t pid;
     int max_players;
 
+    //лочим игры так юзаем очитску пустых игр после выхода игроков
     pthread_mutex_lock(&games_mutex);
-
+    
+    //анализ/парсинг строки
     if (sscanf(buf, "CREATE %31s %d %d", game_name, &max_players, &pid) == 3) {
         if (game_count >= MAX_GAMES) {
             send_to_client(pid, "Max games reached\n");
@@ -391,6 +400,7 @@ static void handle_command(const char *cmdline) {
         g->current_turn = 0;
         g->players[0].pid = pid;
 
+        //ответ клиенту строкой и лог
         send_to_client(pid, "Game created successfully\n");
         log_event("Game created");
     }
@@ -408,6 +418,7 @@ static void handle_command(const char *cmdline) {
 
             char msg[96];
             snprintf(msg, sizeof(msg), "Player %d joined the game.\n", pid);
+            //вещает всем сообщение
             broadcast_to_game(g, msg);
             log_event("Player joined");
         }
@@ -497,10 +508,10 @@ static void handle_command(const char *cmdline) {
 int main(void) {
     install_server_handlers();
 
-    // Seed RNG once (POSIX-style): random_word() should not reseed each call.
+    //для рандома
     srand((unsigned)time(NULL) ^ (unsigned)getpid());
 
-    // If last run crashed and FIFO is still present
+    //очистка старого FIFO и создание нового
     unlink(SERVER_FIFO);
 
     if (mkfifo(SERVER_FIFO, 0666) < 0) {
@@ -508,7 +519,6 @@ int main(void) {
         return 1;
     }
 
-    // Open as O_RDWR to avoid EOF/spin when there are no clients.
     server_fd = open(SERVER_FIFO, O_RDWR | O_NONBLOCK);
     if (server_fd < 0) {
         perror("open server fifo");
@@ -516,7 +526,7 @@ int main(void) {
         return 1;
     }
 
-    // Background cleanup so games end even if clients crash silently.
+    // Запуск reaper-потока очищает список игр даже если клиенты завершаются "тихо" -- без EXIT.
     if (pthread_create(&reaper_thread, NULL, reaper_thread_func, NULL) == 0) {
         reaper_started = 1;
     }
@@ -525,38 +535,60 @@ int main(void) {
 
     fd_set rfds;
 
+//временный буфер для одного read()
 char rbuf[256];
+//накопительный буфер, чтобы собирать команды построчно (\n)
 char inbuf[2048];
 size_t inlen = 0;
 
+//loop пока работает
 while (running) {
+    //если закрыт дескриптор --> выход из цикла
     if (server_fd < 0) break;
 
+    //select() ждёт, пока в server_fifo появятся данные
+    //Таймаута нет (NULL) → ждём бесконечно, пока не придёт команда или сигнал.
     FD_ZERO(&rfds);
     FD_SET(server_fd, &rfds);
 
+    /* 
+    Обработка ошибок select
+    Сценарии:
+        running==0 → пришёл сигнал завершения → выходим
+        EBADF → server_fd закрыли (например, из handler’а) → выходим
+        прочие ошибки → печатаем и выходим 
+    */
     int ret = select(server_fd + 1, &rfds, NULL, NULL, NULL);
     if (ret < 0) {
-        if (!running) break;       // shutdown requested
-        if (errno == EBADF) break; // fd closed in signal handler
+        if (!running) break;       
+        if (errno == EBADF) break; 
         perror("select");
         break;
     }
-
+ 
+    /*
+    Читаем кусок байтов.
+    Если ничего не прочитали — продолжаем цикл.
+    */
     if (!FD_ISSET(server_fd, &rfds)) continue;
 
     int n = read(server_fd, rbuf, sizeof(rbuf));
     if (n <= 0) continue;
 
-    // Append into line buffer
+    // Добавляем прочитанное в inbuf
     if (inlen + (size_t)n >= sizeof(inbuf)) {
-        // Buffer overflow: drop accumulated data (protocol error / flood).
         inlen = 0;
     }
     memcpy(inbuf + inlen, rbuf, (size_t)n);
     inlen += (size_t)n;
-
-        // Process complete lines (commands end with '\n')
+    /*Это защита от ситуации, если клиент начнёт слать очень много мусора без \n*/
+        
+    //Разбор команд по строкам (\n)
+    /*ищем первый \n → это конец команды
+        копируем команду в line
+        удаляем её из inbuf (memmove сдвигает остаток)
+        вызываем handle_command(line) — сервер обрабатывает команду
+        Цикл for(;;) продолжает, пока в inbuf есть ещё целые строки.*/
         for (;;) {
             void *p = memchr(inbuf, '\n', inlen);
             if (!p) break;
@@ -582,13 +614,13 @@ while (running) {
 }
 
 
-    // Stop background thread and exit cleanly.
+    // завершаем reaper
     running = 0;
     if (reaper_started) {
         pthread_join(reaper_thread, NULL);
     }
 
-    // Log server shutdown (graceful stop).
+    // лог остановки сервера
     if (shutdown_signal) {
         char msg[128];
         snprintf(msg, sizeof(msg), "Server stopped (signal %d)", (int)shutdown_signal);
@@ -596,7 +628,8 @@ while (running) {
     } else {
         log_event("Server stopped");
     }
-
+    
+    //вызываем завершение сервера --> закрыть fd и удалить FIFO
     server_cleanup();
     return 0;
 }
