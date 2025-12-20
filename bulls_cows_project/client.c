@@ -5,59 +5,254 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <pthread.h>
+#include <signal.h>
+#include <errno.h>
+#include <time.h>
 
 #define SERVER_FIFO "server_fifo"
 #define MAX_PLAYERS 5
 
-int server_fd;
-int client_fd;
-char game[32];
-pid_t pid;
+static int server_fd = -1;
+static int client_fd = -1;
 
-volatile int running = 1;
-pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char game[32] = {0};
+static pid_t pid;
+static char client_fifo_path[64] = {0};
 
-void safe_print(const char *msg) {
+static volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t list_running = 0;
+static volatile sig_atomic_t game_over = 0;
+
+static pthread_t main_thread_id;
+
+static pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Synchronization to wait for CREATE/JOIN result
+static pthread_mutex_t resp_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  resp_cond  = PTHREAD_COND_INITIALIZER;
+static int waiting_create = 0;
+static int waiting_join = 0;
+static int last_result = 0; // 0=unknown, 1=success, -1=failure
+
+// Prebuilt EXIT message used by SIGINT handler (async-signal-safe write()).
+static char exit_msg[128] = {0};
+static volatile sig_atomic_t exit_msg_len = 0;
+static volatile sig_atomic_t have_game = 0;
+
+static void safe_print(const char *msg) {
     pthread_mutex_lock(&print_mutex);
-    printf("%s", msg);
+    fputs(msg, stdout);
     fflush(stdout);
     pthread_mutex_unlock(&print_mutex);
 }
 
-void *read_thread_func(void *arg) {
+static void client_cleanup(void) {
+    if (client_fd >= 0) {
+        close(client_fd);
+        client_fd = -1;
+    }
+    if (server_fd >= 0) {
+        close(server_fd);
+        server_fd = -1;
+    }
+    if (client_fifo_path[0] != '\0') {
+        unlink(client_fifo_path);
+    }
+}
+
+static void on_signal(int sig) {
+    (void)sig;
+    running = 0;
+    list_running = 0;
+
+    // Best-effort: tell server we're leaving the current game.
+    if (have_game && server_fd >= 0 && exit_msg_len > 0) {
+        (void)write(server_fd, exit_msg, (size_t)exit_msg_len);
+    }
+
+    client_cleanup();
+    _exit(128 + sig);
+}
+
+// Used only to interrupt blocking stdin reads (fgets/scanf) from another thread.
+static void wake_stdin_handler(int sig) {
+    (void)sig;
+}
+
+static void install_client_handlers(void) {
+    atexit(client_cleanup);
+
+    signal(SIGINT,  on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGHUP,  on_signal);
+    signal(SIGQUIT, on_signal);
+
+    // Crash signals: best-effort cleanup (can't be guaranteed for all cases)
+    signal(SIGSEGV, on_signal);
+    signal(SIGABRT, on_signal);
+    signal(SIGFPE,  on_signal);
+    signal(SIGILL,  on_signal);
+#ifdef SIGBUS
+    signal(SIGBUS,  on_signal);
+#endif
+
+    // Don't die if we write to a closed FIFO.
+    signal(SIGPIPE, SIG_IGN);
+
+    // Used by reader thread to wake the main thread if the game ends.
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = wake_stdin_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0; // important: do NOT use SA_RESTART so fgets can be interrupted
+    sigaction(SIGUSR1, &sa, NULL);
+}
+
+static void maybe_signal_waiters(const char *msg) {
+    // Called from reader thread.
+    pthread_mutex_lock(&resp_mutex);
+
+    if (waiting_create) {
+        if (strstr(msg, "Game created successfully") != NULL) {
+            last_result = 1;
+            waiting_create = 0;
+            pthread_cond_signal(&resp_cond);
+        } else if (strstr(msg, "Max games") || strstr(msg, "Invalid") || strstr(msg, "taken")) {
+            last_result = -1;
+            waiting_create = 0;
+            pthread_cond_signal(&resp_cond);
+        }
+    }
+
+    if (waiting_join) {
+        if (strstr(msg, "Joined game successfully") != NULL) {
+            last_result = 1;
+            waiting_join = 0;
+            pthread_cond_signal(&resp_cond);
+        } else if (strstr(msg, "Game is full") || strstr(msg, "Game not found") || strstr(msg, "Already in") ) {
+            last_result = -1;
+            waiting_join = 0;
+            pthread_cond_signal(&resp_cond);
+        }
+    }
+
+    pthread_mutex_unlock(&resp_mutex);
+}
+
+static void maybe_handle_game_over(const char *msg) {
+    if (game_over) return;
+
+    // Server broadcasts these when the game finishes.
+    if (strstr(msg, "Game ended") != NULL || strstr(msg, "WINS the game") != NULL) {
+        game_over = 1;
+        have_game = 0;
+        exit_msg_len = 0;
+        list_running = 0;
+
+        safe_print("\n[Client] Game finished. Exiting input mode...\n");
+
+        // Wake the main thread if it's blocked on stdin.
+        pthread_kill(main_thread_id, SIGUSR1);
+    }
+}
+
+static void *read_thread_func(void *arg) {
+    (void)arg;
     char buf[256];
+
     while (running) {
         int n = read(client_fd, buf, sizeof(buf) - 1);
         if (n > 0) {
             buf[n] = '\0';
+
+            maybe_signal_waiters(buf);
+            maybe_handle_game_over(buf);
+
             pthread_mutex_lock(&print_mutex);
             printf("\r%s\n> ", buf);
             fflush(stdout);
             pthread_mutex_unlock(&print_mutex);
         } else {
-            usleep(100000); // 100 ms sleep to reduce CPU load
+            usleep(100000);
         }
     }
+
     return NULL;
 }
 
-int main() {
-    pid = getpid();
-    char fifo[64];
-    snprintf(fifo, sizeof(fifo), "client_%d_fifo", pid);
-    mkfifo(fifo, 0666);
+static void *list_thread_func(void *arg) {
+    (void)arg;
+    char cmd[64];
 
-    server_fd = open(SERVER_FIFO, O_WRONLY);
-    if (server_fd < 0) {
-        perror("open server fifo");
-        unlink(fifo);
+    while (running && list_running) {
+        int len = snprintf(cmd, sizeof(cmd), "LIST %d\n", pid);
+        if (len > 0 && server_fd >= 0) {
+            (void)write(server_fd, cmd, (size_t)len);
+        }
+
+        // sleep 2 seconds but allow quick stop
+        for (int i = 0; i < 20 && running && list_running; i++) {
+            usleep(1000000);
+        }
+    }
+
+    return NULL;
+}
+
+static int wait_result(int is_join) {
+    // returns 1 success, 0 failure/timeout
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 5; // up to 5 seconds
+
+    pthread_mutex_lock(&resp_mutex);
+    last_result = 0;
+    if (is_join) waiting_join = 1;
+    else waiting_create = 1;
+
+    while (last_result == 0) {
+        int rc = pthread_cond_timedwait(&resp_cond, &resp_mutex, &ts);
+        if (rc == ETIMEDOUT) break;
+    }
+
+    int ok = (last_result == 1);
+
+    // If timed out, stop waiting flags.
+    if (is_join) waiting_join = 0;
+    else waiting_create = 0;
+
+    pthread_mutex_unlock(&resp_mutex);
+    return ok;
+}
+
+int main(void) {
+    pid = getpid();
+    install_client_handlers();
+
+    // Reader thread will use this to interrupt blocking stdin reads when the game ends.
+    main_thread_id = pthread_self();
+
+    snprintf(client_fifo_path, sizeof(client_fifo_path), "client_%d_fifo", pid);
+
+    // If previous run crashed and FIFO stayed
+    unlink(client_fifo_path);
+
+    if (mkfifo(client_fifo_path, 0666) < 0) {
+        perror("mkfifo client");
         return 1;
     }
-    client_fd = open(fifo, O_RDONLY | O_NONBLOCK);
+
+    server_fd = open(SERVER_FIFO, O_WRONLY | O_NONBLOCK);
+    if (server_fd < 0) {
+        perror("open server fifo");
+        client_cleanup();
+        return 1;
+    }
+
+    client_fd = open(client_fifo_path, O_RDONLY | O_NONBLOCK);
     if (client_fd < 0) {
         perror("open client fifo");
-        close(server_fd);
-        unlink(fifo);
+        client_cleanup();
         return 1;
     }
 
@@ -66,49 +261,79 @@ int main() {
 
     int choice;
     safe_print("1. Create game\n2. Join game\n> ");
-    scanf("%d", &choice);
+    if (scanf("%d", &choice) != 1) {
+        running = 0;
+        pthread_join(reader_thread, NULL);
+        client_cleanup();
+        return 1;
+    }
+
+    pthread_t list_thread;
+    int list_thread_started = 0;
 
     if (choice == 1) {
         int max;
         safe_print("Game name: ");
         scanf("%31s", game);
-        safe_print("Max players (2-5): ");
+        safe_print("Max players (1-5): ");
         scanf("%d", &max);
-        if (max < 2 || max > MAX_PLAYERS) {
+
+        if (max < 1 || max > MAX_PLAYERS) {
             safe_print("Invalid number of players.\n");
             running = 0;
             pthread_join(reader_thread, NULL);
-            close(server_fd);
-            close(client_fd);
-            unlink(fifo);
+            client_cleanup();
             return 1;
         }
 
         char msg[128];
-        snprintf(msg, sizeof(msg), "CREATE %s %d %d", game, max, pid);
-        write(server_fd, msg, strlen(msg));
+        snprintf(msg, sizeof(msg), "CREATE %s %d %d\n", game, max, pid);
+        (void)write(server_fd, msg, strlen(msg));
+
+        if (!wait_result(0)) {
+            safe_print("Create failed (or timed out).\n");
+            running = 0;
+            pthread_join(reader_thread, NULL);
+            client_cleanup();
+            return 1;
+        }
+
+        exit_msg_len = (sig_atomic_t)snprintf(exit_msg, sizeof(exit_msg), "EXIT %s %d\n", game, pid);
+        have_game = 1;
     }
     else if (choice == 2) {
-        char list_cmd[64];
-        snprintf(list_cmd, sizeof(list_cmd), "LIST %d", pid);
-        write(server_fd, list_cmd, strlen(list_cmd));
+        safe_print("\nAvailable games list refreshes every 20 seconds.\n");
 
-        sleep(1); // wait a bit for server response
+        list_running = 1;
+        pthread_create(&list_thread, NULL, list_thread_func, NULL);
+        list_thread_started = 1;
 
-        safe_print("\nEnter game name to join: ");
+        safe_print("Enter game name to join: ");
         scanf("%31s", game);
 
+        list_running = 0;
+        pthread_join(list_thread, NULL);
+
         char msg[128];
-        snprintf(msg, sizeof(msg), "JOIN %s %d", game, pid);
-        write(server_fd, msg, strlen(msg));
+        snprintf(msg, sizeof(msg), "JOIN %s %d\n", game, pid);
+        (void)write(server_fd, msg, strlen(msg));
+
+        if (!wait_result(1)) {
+            safe_print("Join failed (or timed out).\n");
+            running = 0;
+            pthread_join(reader_thread, NULL);
+            client_cleanup();
+            return 1;
+        }
+
+        exit_msg_len = (sig_atomic_t)snprintf(exit_msg, sizeof(exit_msg), "EXIT %s %d\n", game, pid);
+        have_game = 1;
     }
     else {
         safe_print("Invalid choice\n");
         running = 0;
         pthread_join(reader_thread, NULL);
-        close(server_fd);
-        close(client_fd);
-        unlink(fifo);
+        client_cleanup();
         return 1;
     }
 
@@ -116,29 +341,38 @@ int main() {
     int c; while ((c = getchar()) != '\n' && c != EOF) {}
 
     char word[32];
-
-    while (running) {
+    while (running && !game_over) {
         safe_print("> ");
-        if (fgets(word, sizeof(word), stdin) == NULL) break;
+        if (!fgets(word, sizeof(word), stdin)) {
+            // If we were interrupted because the game ended, just leave.
+            if (game_over) break;
+            if (errno == EINTR) continue;
+            break;
+        }
 
-        word[strcspn(word, "\n")] = 0; // remove trailing newline
+        word[strcspn(word, "\n")] = 0;
+
+        if (game_over) break;
 
         if (strcmp(word, "EXIT") == 0) {
             char msg[128];
-            snprintf(msg, sizeof(msg), "EXIT %s %d", game, pid);
-            write(server_fd, msg, strlen(msg));
-            running = 0;
+            snprintf(msg, sizeof(msg), "EXIT %s %d\n", game, pid);
+            (void)write(server_fd, msg, strlen(msg));
             break;
-        } else {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "GUESS %s %d %s", game, pid, word);
-            write(server_fd, msg, strlen(msg));
         }
+
+        char msg[128];
+        snprintf(msg, sizeof(msg), "GUESS %s %d %s\n", game, pid, word);
+        (void)write(server_fd, msg, strlen(msg));
     }
 
+    running = 0;
+    if (list_thread_started) {
+        list_running = 0;
+        pthread_join(list_thread, NULL);
+    }
     pthread_join(reader_thread, NULL);
-    close(server_fd);
-    close(client_fd);
-    unlink(fifo);
+
+    client_cleanup();
     return 0;
 }
